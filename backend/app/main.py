@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import UUID
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from .planner import Planner
 from .runtime import AgentRuntime, BrowserManager, TaskStore
 from .schemas import AgentTask, CreateTaskRequest, HealthResponse
 
-store = TaskStore()
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+store = TaskStore(Path(".runtime/tasks.json"))
 browser = BrowserManager(headless=os.getenv("HEADLESS", "true").lower() == "true")
 runtime = AgentRuntime(store, browser, Planner())
 
@@ -60,6 +64,17 @@ async def get_task(task_id: UUID) -> AgentTask:
     if not task:
         raise HTTPException(404, "Task not found")
     return task
+
+
+@app.get("/api/tasks/{task_id}/artifact")
+async def get_task_artifact(task_id: UUID) -> FileResponse:
+    task = store.get(task_id)
+    if not task or not task.artifact_path:
+        raise HTTPException(404, "Artifact not found")
+    path = Path(task.artifact_path)
+    if not path.exists():
+        raise HTTPException(404, "Artifact file not found")
+    return FileResponse(path, media_type="image/png", filename=f"task-{task_id}.png")
 
 
 @app.post("/api/tasks/{task_id}/cancel", response_model=AgentTask)

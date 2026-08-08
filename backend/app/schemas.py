@@ -13,6 +13,7 @@ class TaskStatus(StrEnum):
     PLANNING = "planning"
     RUNNING = "running"
     RECOVERING = "recovering"
+    NEEDS_INPUT = "needs_input"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -41,6 +42,16 @@ class RuntimeEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class FlightOption(BaseModel):
+    airline: str
+    flight_number: str
+    departure: str
+    arrival: str
+    duration: str
+    stops: str
+    price: str
+
+
 class AgentTask(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     objective: str
@@ -53,6 +64,8 @@ class AgentTask(BaseModel):
     events: list[RuntimeEvent] = Field(default_factory=list)
     result: str | None = None
     error: str | None = None
+    flight_options: list[FlightOption] = Field(default_factory=list)
+    artifact_path: str | None = None
 
 
 class HealthResponse(BaseModel):

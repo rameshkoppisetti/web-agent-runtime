@@ -3,9 +3,10 @@ import { createRoot } from 'react-dom/client'
 import { Activity, Bot, CheckCircle2, ChevronRight, Clock3, Globe2, Plus, Radio, Sparkles, X } from 'lucide-react'
 import './styles.css'
 
-type Status = 'queued' | 'planning' | 'running' | 'recovering' | 'completed' | 'failed' | 'cancelled'
+type Status = 'queued' | 'planning' | 'running' | 'recovering' | 'needs_input' | 'completed' | 'failed' | 'cancelled'
 type Event = { id: string; at: string; kind: string; message: string; data: Record<string, unknown> }
-type Task = { id: string; objective: string; start_url?: string; status: Status; created_at: string; plan: string[]; events: Event[]; result?: string }
+type FlightOption = { airline: string; flight_number: string; departure: string; arrival: string; duration: string; stops: string; price: string }
+type Task = { id: string; objective: string; start_url?: string; status: Status; created_at: string; plan: string[]; events: Event[]; result?: string; flight_options?: FlightOption[]; artifact_path?: string }
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const sample: Task = {
@@ -71,7 +72,7 @@ function App() {
       setTasks(current => current.map(item => item.id === task.id ? task : item))
     }
   }
-  const active = tasks.filter(t => ['queued', 'planning', 'running', 'recovering'].includes(t.status)).length
+  const active = tasks.filter(t => ['queued', 'planning', 'running', 'recovering', 'needs_input'].includes(t.status)).length
 
   return <main className="app-shell">
     <aside className="sidebar">
@@ -97,7 +98,7 @@ function App() {
           <div className="task-list">{(tasks.length ? tasks : [sample]).map(task => <button className={`task ${selected?.id === task.id ? 'selected' : ''}`} key={task.id} onClick={() => setSelectedId(task.id)}><div className="task-top"><StatusBadge status={task.status}/><time>{new Date(task.created_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</time></div><strong>{task.objective}</strong>{task.start_url && <span className="task-url"><Globe2 size={12}/>{task.start_url.replace(/^https?:\/\//, '')}</span>}<ChevronRight className="arrow" size={16}/></button>)}</div>
         </section>
         <section className="panel detail"><div className="panel-head"><div><p className="eyebrow">LIVE TRACE</p><h2>{selected?.objective || 'Select a mission'}</h2></div><div className="trace-actions">{selected && ['queued', 'planning', 'running', 'recovering'].includes(selected.status) && selected.id !== 'preview' && <button className="cancel" onClick={cancelTask}><X size={13}/> Cancel</button>}{selected && <StatusBadge status={selected.status}/>}</div></div>
-          {selected && <><div className="plan"><p>EXECUTION PLAN</p>{selected.plan.map((step, index) => <div className="plan-step" key={step}><span>{index + 1}</span>{step}</div>)}</div><div className="timeline">{selected.events.map((event, index) => <div className="event" key={event.id}><div className={`event-dot ${event.kind}`}>{event.kind === 'system' ? <CheckCircle2 size={13}/> : <Activity size={13}/>}</div>{index < selected.events.length - 1 && <i/>}<div><span className="event-kind">{event.kind}</span><p>{event.message}</p>{Object.keys(event.data).length > 0 && <code>{JSON.stringify(event.data)}</code>}</div></div>)}</div>{selected.result && <div className="result"><Sparkles size={16}/><span>{selected.result}</span></div>}</>}
+          {selected && <><div className="plan"><p>EXECUTION PLAN</p>{selected.plan.map((step, index) => <div className="plan-step" key={step}><span>{index + 1}</span>{step}</div>)}</div>{selected.flight_options && selected.flight_options.length > 0 && <div style={{ margin: '0 20px 18px' }}><p className="eyebrow">FLIGHT SHORTLIST · READ ONLY</p><div style={{ display: 'grid', gap: 8 }}>{selected.flight_options.map(option => <div key={`${option.flight_number}-${option.departure}`} style={{ border: '1px solid #303852', borderRadius: 8, padding: '11px 12px', display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12 }}><div><strong>{option.airline}</strong><span style={{ color: '#8995ad', marginLeft: 7, fontFamily: 'DM Mono' }}>{option.flight_number}</span><div style={{ color: '#b9c1d1', marginTop: 4 }}>{option.departure} → {option.arrival} · {option.duration} · {option.stops}</div></div><strong style={{ color: '#63d9a2', whiteSpace: 'nowrap' }}>{option.price}</strong></div>)}</div></div>}<div className="timeline">{selected.events.map((event, index) => <div className="event" key={event.id}><div className={`event-dot ${event.kind}`}>{event.kind === 'system' ? <CheckCircle2 size={13}/> : <Activity size={13}/>}</div>{index < selected.events.length - 1 && <i/>}<div><span className="event-kind">{event.kind}</span><p>{event.message}</p>{Object.keys(event.data).length > 0 && <code>{JSON.stringify(event.data)}</code>}</div></div>)}</div>{selected.result && <div className="result"><Sparkles size={16}/><span>{selected.result}</span>{selected.artifact_path && <a href={`${API}/api/tasks/${selected.id}/artifact`} target="_blank" rel="noreferrer" style={{ color: '#a79dff', marginLeft: 'auto', whiteSpace: 'nowrap' }}>View trace</a>}</div>}</>}
         </section>
       </div>
     </section>
