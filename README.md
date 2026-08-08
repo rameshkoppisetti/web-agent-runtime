@@ -29,6 +29,8 @@ This is designed as an **AI infrastructure / backend systems project** rather th
 
 ## Architecture
 <img width="2028" height="990" alt="image" src="https://github.com/user-attachments/assets/a3e564ea-a3c6-4a7f-919c-6c0e62d4883c" />
+<img width="2470" height="1224" alt="image" src="https://github.com/user-attachments/assets/d13a5ad0-4986-4e77-87d4-ea23d99ad88d" />
+
 
 ## Features
 
