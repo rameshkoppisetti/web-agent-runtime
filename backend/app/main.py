@@ -45,6 +45,10 @@ app.add_middleware(
 async def health() -> HealthResponse:
     return HealthResponse(browser="ready" if browser._browser else "starting")
 
+@app.get("/api/tools")
+async def list_tools():
+    return browser.tools.list_tools()
+
 
 @app.get("/api/tasks", response_model=list[AgentTask])
 async def list_tasks() -> list[AgentTask]:

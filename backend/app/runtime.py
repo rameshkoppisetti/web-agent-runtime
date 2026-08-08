@@ -16,6 +16,7 @@ from playwright.async_api import Browser, Playwright, async_playwright
 from .constraints import FlightRequest, parse_flight_request
 from .planner import Planner
 from .schemas import AgentTask, EventKind, FlightOption, RuntimeEvent, TaskStatus
+from .tools import create_default_registry
 
 
 class TaskStore:
@@ -75,6 +76,7 @@ class BrowserManager:
         self.headless = headless
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self.tools = create_default_registry()
 
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
@@ -96,11 +98,11 @@ class BrowserManager:
     async def observe(self, url: str) -> tuple[str, str]:
         if not self._browser:
             raise RuntimeError("Browser is not available")
+
         page = await self._browser.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-            title = await page.title()
-            return title, page.url
+            data = await self.tools.execute("navigate", page, url=url)
+            return data["title"], data["url"]
         finally:
             await page.close()
 
