@@ -260,28 +260,3 @@ npm run dev
 * Structured artifact storage (S3/GCS)
 
 ---
-
-# Resume Bullet
-
-**Built a LangGraph-based browser-agent runtime using FastAPI, Playwright, SSE, and PostgreSQL with planning, recovery, event streaming, and durable execution history; implemented bounded web automation with safety enforcement and retry orchestration.**
-
----
-
-# Why this project is interesting
-
-Most browser automation demos stop at "open page and click button." This project focuses on the **runtime concerns of AI agents**:
-
-* planning,
-* bounded execution,
-* observability,
-* recovery,
-* persistence,
-* and safety.
-
-Those are the same concerns encountered in production AI systems.
-
----
-
-# License
-
-MIT License.
