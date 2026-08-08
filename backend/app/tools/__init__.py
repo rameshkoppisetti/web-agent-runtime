@@ -2,8 +2,10 @@ from .registry import ToolRegistry
 from .navigation import NavigateTool
 from .dom import ClickTool, WaitForSelectorTool, GetTextTool
 from .forms import FillTool, SelectOptionTool
+from .overlays import DismissOverlaysTool
 from .screenshots import ScreenshotTool
 from .extraction import ExtractPageTool, ExtractLinksTool
+
 
 
 def create_default_registry() -> ToolRegistry:
@@ -14,6 +16,7 @@ def create_default_registry() -> ToolRegistry:
     registry.register(WaitForSelectorTool())
     registry.register(GetTextTool())
     registry.register(FillTool())
+    registry.register(DismissOverlaysTool())
     registry.register(SelectOptionTool())
     registry.register(ScreenshotTool())
     registry.register(ExtractPageTool())

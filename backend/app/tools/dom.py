@@ -9,7 +9,14 @@ class ClickTool(BrowserTool):
     name = "click"
 
     async def run(self, page: Page, selector: str):
-        await page.locator(selector).click()
+        locator = page.locator(selector)
+        await locator.wait_for(state="visible", timeout=10_000)
+
+        try:
+            await locator.click(timeout=5_000)
+        except Exception:
+            await locator.evaluate("el => el.click()")
+
         return {"selector": selector, "status": "clicked"}
 
 

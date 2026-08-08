@@ -122,6 +122,10 @@ class BrowserManager:
         page = await self._browser.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+
+            # NEW: dismiss login popups / overlays before interacting with the form
+            await self.tools.execute("dismiss_overlays", page)
+
             close = page.get_by_test_id("closeIcon")
             if await close.count() == 1:
                 await close.click(force=True)
@@ -147,7 +151,14 @@ class BrowserManager:
                 option = page.locator("p").filter(has_text=re.compile(re.escape(matches[0])))
                 if await option.count() != 1:
                     raise RuntimeError(f"Cleartrip airport suggestion for {city!r} was not actionable")
-                await option.click()
+                text = matches[0]
+                escaped = text.replace("\\", "\\\\\\").replace("'", "\\\\'")
+
+                await self.tools.execute(
+                    "click",
+                    page,
+                    selector=f"p:has-text('{escaped}')",
+                    )
 
             await page.get_by_test_id("dateSelectOnward").click()
             days = page.locator(".day-gridContent").filter(has_text=re.compile(rf"^{departure.day}$"))
@@ -197,6 +208,7 @@ class BrowserManager:
 
 class RuntimeState(TypedDict):
     task: AgentTask
+    retries: int
 
 
 class AgentRuntime:
@@ -205,6 +217,7 @@ class AgentRuntime:
         self.browser = browser
         self.planner = planner
         self.workers: dict[UUID, asyncio.Task[None]] = {}
+        self.max_retries = 2
         graph = StateGraph(RuntimeState)
         graph.add_node("planner", self._planner_node)
         graph.add_node("browser", self._browser_node)
@@ -212,7 +225,15 @@ class AgentRuntime:
         graph.add_edge(START, "planner")
         graph.add_edge("planner", "browser")
         graph.add_edge("browser", "critic")
-        graph.add_edge("critic", END)
+
+        graph.add_conditional_edges(
+            "critic",
+            self._critic_router,
+            {
+                "planner": "planner",
+                END: END,
+            },
+        )
         self.graph = graph.compile()
 
     def launch(self, task: AgentTask) -> None:
@@ -227,7 +248,7 @@ class AgentRuntime:
 
     async def run(self, task: AgentTask) -> None:
         try:
-            await self.graph.ainvoke({"task": task})
+            await self.graph.ainvoke({"task": task, "retries": 0})
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -241,11 +262,32 @@ class AgentRuntime:
         task = state["task"]
         task.status = TaskStatus.PLANNING
         await self.store.emit(task, EventKind.SYSTEM, "Task accepted by LangGraph runtime")
-        plan = await self.planner.create(task.objective, task.start_url, task.max_steps)
+        plan = await self.planner.create(
+            task.objective,
+            task.start_url,
+            task.max_steps,
+            failure_context=task.error,
+        )
         task.plan = plan.steps
         await self.store.emit(task, EventKind.PLAN, "Execution plan created", steps=task.plan, provider=plan.provider)
+        retries = state["retries"]
+
+        if retries > 0:
+            await self.store.emit(
+                task,
+                EventKind.RECOVERY,
+                "Re-planning after recoverable failure",
+                retry=retries,
+                previous_error=task.error,
+            )
+
         if plan.fallback_reason:
-            await self.store.emit(task, EventKind.RECOVERY, "Model planner unavailable; using safe local fallback", reason=plan.fallback_reason)
+            await self.store.emit(
+                task,
+                EventKind.RECOVERY,
+                "Model planner unavailable; using safe local fallback",
+                reason=plan.fallback_reason,
+            )
         await asyncio.sleep(0.35)
         return state
 
@@ -265,7 +307,6 @@ class AgentRuntime:
                     missing=flight.missing,
                 )
                 task.result = f"I need the {missing} before searching flights. Add it to the objective and launch a new task; no booking or payment actions will be taken."
-                await self.store.emit(task, EventKind.SYSTEM, "Task is waiting for operator input", result=task.result)
                 return state
             if flight and task.start_url and "cleartrip.com" in task.start_url:
                 await self.store.emit(
@@ -286,10 +327,23 @@ class AgentRuntime:
                     return state
                 except Exception as exc:
                     task.status = TaskStatus.RECOVERING
-                    await self.store.emit(task, EventKind.RECOVERY, "Flight search could not be completed safely", reason=str(exc))
-                    task.result = "The flight form could not be completed safely. Review the recovery event and refine the city or date constraints."
-                    task.status = TaskStatus.NEEDS_INPUT
-                    await self.store.emit(task, EventKind.SYSTEM, "Task is waiting for operator input", result=task.result)
+                    task.error = str(exc)
+                    state["retries"] += 1
+
+                    await self.store.emit(
+                        task,
+                        EventKind.RECOVERY,
+                        "Flight search could not be completed safely",
+                        reason=str(exc),
+                        retry=state["retries"],
+                        max_retries=self.max_retries,
+                    )
+
+                    task.result = (
+                        "The flight form could not be completed safely. "
+                        "Attempting recovery through re-planning."
+                    )
+
                     return state
             if task.start_url:
                 await self.store.emit(task, EventKind.ACTION, "Navigating to starting URL", url=task.start_url)
@@ -298,29 +352,87 @@ class AgentRuntime:
                     await self.store.emit(task, EventKind.OBSERVATION, "Page observed", title=title, url=final_url)
                     task.result = f"Observed {title or 'page'} at {final_url}. Objective ready for model-guided continuation."
                 except Exception as exc:
-                    task.status = TaskStatus.RECOVERING
-                    await self.store.emit(task, EventKind.RECOVERY, "Navigation failed; retaining task context", reason=str(exc))
-                    task.result = "The initial page could not be reached. Review the event trail and retry with a reachable URL."
+                        task.status = TaskStatus.RECOVERING
+                        task.error = str(exc)
+                        state["retries"] += 1
+
+                        await self.store.emit(
+                            task,
+                            EventKind.RECOVERY,
+                            "Navigation failed; retaining task context",
+                            reason=str(exc),
+                            retry=state["retries"],
+                            max_retries=self.max_retries,
+                        )
+
+                        task.result = (
+                            "The initial page could not be reached. "
+                            "Attempting recovery through re-planning."
+                        )
             else:
                 await self.store.emit(task, EventKind.OBSERVATION, "No start URL supplied; plan is ready for a model-directed action")
                 task.result = "Plan created. Provide a starting URL to begin a browser run."
             return state
         except Exception as exc:
             task.status = TaskStatus.RECOVERING
+            task.error = str(exc)
+            state["retries"] += 1
             task.result = "The browser executor encountered an unexpected condition. Review the trace and retry."
-            await self.store.emit(task, EventKind.RECOVERY, "Browser executor requires recovery", reason=str(exc))
+            await self.store.emit(task, EventKind.RECOVERY, "Browser executor requires recovery", reason=str(exc),
+                retry=state["retries"], max_retries=self.max_retries)
             return state
 
     async def _critic_node(self, state: RuntimeState) -> RuntimeState:
         task = state["task"]
+        retries = state["retries"]
+
+        if task.status == TaskStatus.RECOVERING and retries < self.max_retries:
+            await self.store.emit(
+                task,
+                EventKind.RECOVERY,
+                "Critic requested another planning attempt",
+                retry=retries,
+                max_retries=self.max_retries,
+            )
+            return state
+
         if task.status in (TaskStatus.NEEDS_INPUT, TaskStatus.CANCELLED):
             return state
+
+        if task.status == TaskStatus.RECOVERING and retries >= self.max_retries:
+            task.status = TaskStatus.FAILED
+            await self.store.emit(
+                task,
+                EventKind.ERROR,
+                "Retry limit exhausted",
+                retry=retries,
+                max_retries=self.max_retries,
+                error=task.error,
+            )
+            return state
+
         if not task.result:
             task.status = TaskStatus.FAILED
             task.error = "Critic received no executable result"
             await self.store.emit(task, EventKind.ERROR, "Critic rejected incomplete execution")
             return state
-        await self.store.emit(task, EventKind.OBSERVATION, "Critic validated safe execution boundary", booking_or_payment_attempted=False)
+
+        await self.store.emit(
+            task,
+            EventKind.OBSERVATION,
+            "Critic validated safe execution boundary",
+            booking_or_payment_attempted=False,
+        )
+
         task.status = TaskStatus.COMPLETED
         await self.store.emit(task, EventKind.SYSTEM, "Task completed", result=task.result)
         return state
+    
+    def _critic_router(self, state: RuntimeState):
+        task = state["task"]
+        retries = state["retries"]
+
+        if task.status == TaskStatus.RECOVERING and retries < self.max_retries:
+            return "planner"
+
+        return END
