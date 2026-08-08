@@ -1,19 +1,27 @@
 services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: webagent
+      POSTGRES_USER: webagent
+      POSTGRES_PASSWORD: webagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
   api:
     build: ./backend
     env_file:
       - .env
     environment:
+      DATABASE_URL: postgresql+asyncpg://webagent:webagent@db:5432/webagent
       HEADLESS: "true"
       CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    depends_on:
+      - db
     ports:
       - "8000:8000"
 
-  web:
-    build: ./frontend
-    depends_on:
-      - api
-    environment:
-      VITE_API_URL: http://localhost:8000
-    ports:
-      - "5173:5173"
+volumes:
+  pgdata:

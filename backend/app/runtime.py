@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from contextlib import suppress
 from datetime import date
-from pathlib import Path
 from datetime import datetime
 from typing import AsyncIterator, TypedDict
 from uuid import UUID
+from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 from playwright.async_api import Browser, Playwright, async_playwright
@@ -17,6 +16,8 @@ from .constraints import FlightRequest, parse_flight_request
 from .planner import Planner
 from .schemas import AgentTask, EventKind, FlightOption, RuntimeEvent, TaskStatus
 from .tools import create_default_registry
+from .db import SessionLocal
+from .models import TaskModel, TaskEventModel
 
 
 class TaskStore:
@@ -25,32 +26,26 @@ class TaskStore:
     Replace this seam with Postgres/Redis before running distributed workers.
     """
 
-    def __init__(self, storage_path: Path | None = None) -> None:
+    def __init__(self) -> None:
         self.tasks: dict[UUID, AgentTask] = {}
         self.streams: dict[UUID, asyncio.Queue[RuntimeEvent]] = {}
-        self.storage_path = storage_path
-        self._load()
 
-    def _load(self) -> None:
-        if not self.storage_path or not self.storage_path.exists():
-            return
-        records = json.loads(self.storage_path.read_text())
-        for record in records:
-            task = AgentTask.model_validate(record)
-            self.tasks[task.id] = task
-            self.streams[task.id] = asyncio.Queue()
-
-    def _save(self) -> None:
-        if not self.storage_path:
-            return
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.storage_path.write_text(json.dumps([task.model_dump(mode="json") for task in self.tasks.values()]))
-
-    def create(self, task: AgentTask) -> AgentTask:
+    async def create(self, task: AgentTask) -> None:
         self.tasks[task.id] = task
-        self.streams[task.id] = asyncio.Queue()
-        self._save()
-        return task
+        self.streams.setdefault(task.id, asyncio.Queue())
+
+        async with SessionLocal() as session:
+            session.add(
+                TaskModel(
+                    id=task.id,
+                    objective=task.objective,
+                    start_url=task.start_url,
+                    status=task.status.value,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+            )
+            await session.commit()
 
     def get(self, task_id: UUID) -> AgentTask | None:
         return self.tasks.get(task_id)
@@ -58,12 +53,47 @@ class TaskStore:
     def list(self) -> list[AgentTask]:
         return sorted(self.tasks.values(), key=lambda task: task.created_at, reverse=True)
 
-    async def emit(self, task: AgentTask, kind: EventKind, message: str, **data: object) -> None:
-        event = RuntimeEvent(kind=kind, message=message, data=data)
+    async def emit(
+        self,
+        task: AgentTask,
+        kind: EventKind,
+        message: str,
+        **data,
+    ) -> None:
+        event = RuntimeEvent(
+            kind=kind,
+            message=message,
+            data=data,
+        )
+        self.tasks[task.id] = task
         task.events.append(event)
         task.updated_at = datetime.utcnow()
-        self._save()
-        await self.streams[task.id].put(event)
+        
+        queue = self.streams.setdefault(task.id, asyncio.Queue())
+        await queue.put(event)
+
+        async with SessionLocal() as session:
+            session.add(
+                TaskEventModel(
+                    task_id=task.id,
+                    kind=kind.value,
+                    message=message,
+                    data=data,
+                    created_at=event.at,
+                )
+            )
+
+            db_task = await session.get(TaskModel, task.id)
+            if db_task:
+                db_task.status = task.status.value
+                db_task.result = task.result
+                db_task.error = task.error
+                db_task.artifact_path = task.artifact_path
+                db_task.retries = data.get("retry", db_task.retries)
+                db_task.updated_at = task.updated_at
+                
+
+            await session.commit()
 
     async def events(self, task_id: UUID) -> AsyncIterator[RuntimeEvent]:
         queue = self.streams[task_id]
@@ -261,15 +291,22 @@ class AgentRuntime:
     async def _planner_node(self, state: RuntimeState) -> RuntimeState:
         task = state["task"]
         task.status = TaskStatus.PLANNING
-        await self.store.emit(task, EventKind.SYSTEM, "Task accepted by LangGraph runtime")
+
+        await self.store.emit(
+            task,
+            EventKind.SYSTEM,
+            "Task accepted by LangGraph runtime",
+        )
+
         plan = await self.planner.create(
             task.objective,
             task.start_url,
             task.max_steps,
             failure_context=task.error,
         )
+
         task.plan = plan.steps
-        await self.store.emit(task, EventKind.PLAN, "Execution plan created", steps=task.plan, provider=plan.provider)
+
         retries = state["retries"]
 
         if retries > 0:
@@ -281,6 +318,14 @@ class AgentRuntime:
                 previous_error=task.error,
             )
 
+        await self.store.emit(
+            task,
+            EventKind.PLAN,
+            "Execution plan created",
+            steps=task.plan,
+            provider=plan.provider,
+        )
+
         if plan.fallback_reason:
             await self.store.emit(
                 task,
@@ -288,9 +333,10 @@ class AgentRuntime:
                 "Model planner unavailable; using safe local fallback",
                 reason=plan.fallback_reason,
             )
+
         await asyncio.sleep(0.35)
         return state
-
+    
     async def _browser_node(self, state: RuntimeState) -> RuntimeState:
         task = state["task"]
         task.status = TaskStatus.RUNNING
@@ -377,7 +423,10 @@ class AgentRuntime:
             task.status = TaskStatus.RECOVERING
             task.error = str(exc)
             state["retries"] += 1
-            task.result = "The browser executor encountered an unexpected condition. Review the trace and retry."
+            task.result = (
+                "The browser executor encountered an unexpected condition. "
+                "Attempting recovery through re-planning."
+            )
             await self.store.emit(task, EventKind.RECOVERY, "Browser executor requires recovery", reason=str(exc),
                 retry=state["retries"], max_retries=self.max_retries)
             return state

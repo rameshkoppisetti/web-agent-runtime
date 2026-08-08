@@ -2,23 +2,26 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from uuid import UUID
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import select
+from pathlib import Path
 
 from .planner import Planner
 from .runtime import AgentRuntime, BrowserManager, TaskStore
 from .schemas import AgentTask, CreateTaskRequest, HealthResponse
+from .db import SessionLocal, engine, Base
+from .models import TaskEventModel
+from . import models
 
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-
-store = TaskStore(Path(".runtime/tasks.json"))
+store = TaskStore()
 browser = BrowserManager(headless=os.getenv("HEADLESS", "true").lower() == "true")
 runtime = AgentRuntime(store, browser, Planner())
+
 
 
 @asynccontextmanager
@@ -41,6 +44,14 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    await browser.start()
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(browser="ready" if browser._browser else "starting")
@@ -57,8 +68,16 @@ async def list_tasks() -> list[AgentTask]:
 
 @app.post("/api/tasks", response_model=AgentTask, status_code=201)
 async def create_task(payload: CreateTaskRequest) -> AgentTask:
-    task = store.create(AgentTask(objective=payload.objective, start_url=str(payload.start_url) if payload.start_url else None, max_steps=payload.max_steps))
+    task = AgentTask(
+        objective=payload.objective,
+        start_url=str(payload.start_url) if payload.start_url else None,
+        max_steps=payload.max_steps,
+    )
+
+    await store.create(task)
+
     runtime.launch(task)
+
     return task
 
 
@@ -106,3 +125,24 @@ async def task_events(task_id: UUID) -> StreamingResponse:
             yield f"data: {event.model_dump_json()}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/tasks/{task_id}/history")
+async def task_history(task_id: UUID):
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(TaskEventModel)
+            .where(TaskEventModel.task_id == task_id)
+            .order_by(TaskEventModel.id)
+        )
+        events = result.scalars().all()
+
+    return [
+        {
+            "kind": e.kind,
+            "message": e.message,
+            "data": e.data,
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in events
+    ]
