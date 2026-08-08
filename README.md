@@ -1,264 +1,287 @@
+
+
 # WebAgent Runtime
 
-A **local-first multi-agent browser automation runtime** that can plan, execute, observe, recover, and stream long-running web workflows in real time.
+A production-style browser-agent runtime built with **FastAPI, LangGraph, Playwright, and PostgreSQL**. The system executes bounded web tasks through a planning → execution → review pipeline, streams live events to a web UI, persists execution history, and supports safe recovery from browser failures.
 
-Built with **FastAPI, LangGraph, Playwright, React, and Docker**.
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
+![Playwright](https://img.shields.io/badge/Playwright-1.50-orange)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.2-purple)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue)
 
+---
+
+## What this project demonstrates
+
+* **AI agent orchestration** with LangGraph
+* **Browser automation** with Playwright
+* **Async backend engineering** with FastAPI
+* **Live event streaming** using Server-Sent Events (SSE)
+* **Durable execution history** in PostgreSQL
+* **Recovery and retry workflows** for flaky web interactions
+* **Containerized deployment** with Docker Compose
+* **Safety boundaries** that prevent booking, payment, or account actions
+
+This is designed as an **AI infrastructure / backend systems project** rather than a scraping script.
+
+---
+
+## Architecture
 <img width="2028" height="990" alt="image" src="https://github.com/user-attachments/assets/a3e564ea-a3c6-4a7f-919c-6c0e62d4883c" />
 
+## Features
+
+### Planning
+
+* LLM-backed planning (OpenAI / Anthropic)
+* Safe local fallback planner when API keys are absent
+* Bounded step generation
+
+### Browser execution
+
+* Playwright Chromium automation
+* Overlay dismissal
+* Deterministic form interactions
+* Read-only flight search flow
+* Screenshot artifact capture
+
+### Critic & Recovery
+
+* Recoverable error classification
+* Automatic replanning with failure context
+* Retry budget enforcement
+* Safe task termination after retry exhaustion
+
+### Persistence
+
+* `tasks` table
+* `task_events` table
+* Full event timeline persisted to PostgreSQL
+* Task history API
+
+### UI
+
+* Live execution trace
+* Task history
+* Event timeline
+* Artifact links
+
 ---
 
-## Overview
+## Tech Stack
 
-WebAgent Runtime is designed as a lightweight browser-agent platform that combines:
-
-* **LLM-driven planning**
-* **Browser automation**
-* **State-machine orchestration**
-* **Real-time execution streaming**
-* **Safe bounded workflows**
-
-The system follows a **Planner → Browser → Critic** execution model, where specialized agents collaborate to complete a user objective while maintaining observability and safety boundaries.
-
----
-
-# Features
-
-* Multi-agent orchestration with **LangGraph**
-* Browser automation with **Playwright**
-* Real-time execution streaming using **Server-Sent Events (SSE)**
-* Screenshot and artifact generation
-* Task history and event persistence
-* OpenAI and Anthropic provider support
-* Graceful fallback planning when an LLM provider is unavailable
-* Local-first deployment with **Docker Compose**
-* Read-only and bounded browser workflows
+| Layer            | Technology     |
+| ---------------- | -------------- |
+| Backend          | FastAPI        |
+| Workflow         | LangGraph      |
+| Browser          | Playwright     |
+| Database         | PostgreSQL 17  |
+| ORM              | SQLAlchemy     |
+| Frontend         | React + Vite   |
+| Streaming        | SSE            |
+| Containerization | Docker Compose |
 
 ---
 
-# Architecture
+## Project Structure
 
 ```text
-React UI
-   │  REST + SSE
-   ▼
-FastAPI Control Plane
-   ▼
-LangGraph Runtime
-   ├── Planner Agent
-   ├── Browser Agent
-   └── Critic Agent
-   ▼
-Playwright Browser Manager
-   ▼
-Chromium Browser
-```
-
-The runtime persists task state and event history through **TaskStore** and streams live execution updates back to the UI.
-
----
-
-# Tech Stack
-
-## Backend
-
-* Python 3.12
-* FastAPI
-* LangGraph
-* Playwright
-* Pydantic
-* OpenAI SDK
-* Anthropic SDK
-* Docker
-
-## Frontend
-
-* React
-* Vite
-* Tailwind CSS
-
----
-
-# Repository Structure
-
-```text
-web-agent-runtime/
-├── backend/
-│   ├── app/
-│   │   ├── main.py
-│   │   ├── runtime.py
-│   │   ├── planner.py
-│   │   ├── constraints.py
-│   │   └── schemas.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/
-│   ├── src/
-│   │   ├── main.tsx
-│   │   └── styles.css
-│   └── Dockerfile
-└── docker-compose.yml
+backend/
+  app/
+    main.py
+    runtime.py
+    planner.py
+    routes.py
+    db.py
+    models.py
+    schemas.py
+    tools/
+frontend/
+docker-compose.yml
+README.md
 ```
 
 ---
 
-# Getting Started
+# Quick Start
 
-## Prerequisites
+## 1. Clone
 
-* Docker
-* Docker Compose
+```bash
+git clone https://github.com/<your-username>/WebAgentRuntime.git
+cd WebAgentRuntime
+```
 
-Optional:
+## 2. Configure environment
 
-* OpenAI API key
-* Anthropic API key
-
----
-
-## Environment Variables
-
-Create a `.env` file in the project root:
+Create `backend/.env`:
 
 ```env
 MODEL_PROVIDER=openai
-MODEL_NAME=gpt-4.1-mini
-OPENAI_API_KEY=your_openai_key
-ANTHROPIC_API_KEY=your_anthropic_key
+MODEL_NAME=gpt-5.4-nano
+OPENAI_API_KEY=your_key_here
+
+DATABASE_URL=postgresql+asyncpg://webagent:webagent@db:5432/webagent
 HEADLESS=true
 ```
 
-If no API key is provided, the runtime automatically uses a safe local fallback planner.
-
----
-
-## Run with Docker
+## 3. Start services
 
 ```bash
 docker compose up --build
 ```
 
-### Services
+Services:
 
-* Frontend: http://localhost:5173
-* Backend API: http://localhost:8000
-
----
-
-# API Endpoints
-
-| Endpoint                       | Description         |
-| ------------------------------ | ------------------- |
-| `GET /health`                  | Runtime health      |
-| `GET /api/tasks`               | List tasks          |
-| `POST /api/tasks`              | Create task         |
-| `GET /api/tasks/{id}`          | Task details        |
-| `GET /api/tasks/{id}/events`   | SSE event stream    |
-| `GET /api/tasks/{id}/artifact` | Screenshot artifact |
-| `POST /api/tasks/{id}/cancel`  | Cancel task         |
+* API: http://localhost:8000
+* UI: http://localhost:5173
+* PostgreSQL: localhost:5432
 
 ---
 
-# Example Request
+# API Examples
+
+## Create a task
 
 ```bash
 curl -X POST http://localhost:8000/api/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "objective": "Research Playwright browser automation patterns",
-    "start_url": "https://playwright.dev"
+    "objective": "Find cheapest flights from Hyderabad, IN to Delhi, IN on 2026-08-25",
+    "start_url": "https://www.cleartrip.com/"
   }'
 ```
 
----
+## Stream live events
 
-# Execution Flow
-
-1. User submits an objective from the React UI.
-2. FastAPI creates a task and launches an asynchronous runtime execution.
-3. Planner Agent generates a bounded execution plan.
-4. Browser Agent executes browser actions through Playwright.
-5. Runtime events are emitted and streamed to the UI via SSE.
-6. Critic Agent validates the result and safety boundary.
-7. Final result and artifacts are persisted and displayed to the user.
-
----
-
-# Event Streaming
-
-The UI receives live events such as:
-
-* SYSTEM
-* PLAN
-* ACTION
-* OBSERVATION
-* RECOVERY
-* ERROR
-
-This provides a real-time execution timeline for debugging and operator visibility.
-
----
-
-# Persistence
-
-Task metadata and event history are currently stored in:
-
-```text
-.runtime/tasks.json
+```bash
+curl -N http://localhost:8000/api/tasks/<TASK_ID>/events
 ```
 
-The persistence layer is intentionally isolated so it can later be replaced with PostgreSQL and Redis for distributed execution.
+## Fetch persisted history
+
+```bash
+curl http://localhost:8000/api/tasks/<TASK_ID>/history
+```
+
+---
+
+# Database
+
+Tables:
+
+```sql
+tasks
+task_events
+```
+
+Verify:
+
+```bash
+docker compose exec db psql -U webagent -d webagent -c "\dt"
+```
+
+---
+
+# Example Live Trace
+
+```text
+Task accepted by LangGraph runtime
+Execution plan created
+Browser session allocated
+Running bounded flight search
+Flight results page reached
+Critic validated safe execution boundary
+Task completed
+```
+
+This trace is streamed live to the UI and persisted to PostgreSQL.
 
 ---
 
 # Safety Model
 
-The current implementation is intentionally conservative:
+The runtime is intentionally bounded:
 
-* No booking or payment execution
-* No account modification flows
-* No credential entry automation
-* Read-only or bounded browser interactions
+* No booking confirmation
+* No payment submission
+* No account login automation
+* No profile or account changes
+* Read-only data collection only
 
-The Critic Agent verifies that these safety constraints were respected before marking a task completed.
-
----
-
-# Current Limitations
-
-* Single-process asyncio runtime
-* No distributed workers
-* Limited browser tool set
-* No persistent database yet
-* MCP integrations are planned but not implemented
+The critic node validates that execution remained within these constraints before marking a task completed.
 
 ---
 
-# Future Enhancements
+# Recovery Example
 
-* Distributed task workers
-* Redis/PostgreSQL persistence
-* Browser session replay
-* Additional browser tools
-* Multi-tab orchestration
-* MCP tool integrations
-* Human approval checkpoints
+```text
+Timeout while waiting for results
+→ task marked RECOVERING
+→ planner receives previous_error
+→ corrected plan generated
+→ browser re-executed
+→ success or retry exhaustion
+```
 
----
-
-# Why This Project
-
-This project demonstrates:
-
-* Multi-agent orchestration
-* Browser automation systems
-* Real-time observability
-* Async backend design
-* LLM provider abstraction
-* Safe execution boundaries
-* Local-first developer tooling
-
-It was built as a practical exploration of **browser-native AI agents** and execution runtimes.
+This demonstrates resilient orchestration rather than a single-shot automation script.
 
 ---
 
+# Development
+
+## Backend
+
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
+
+## Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+---
+
+# Future Improvements
+
+* Alembic migrations
+* Redis-backed distributed workers
+* OpenTelemetry tracing
+* Playwright session pooling
+* Multi-provider planner routing
+* Human-in-the-loop approvals
+* Kubernetes deployment
+* Structured artifact storage (S3/GCS)
+
+---
+
+# Resume Bullet
+
+**Built a LangGraph-based browser-agent runtime using FastAPI, Playwright, SSE, and PostgreSQL with planning, recovery, event streaming, and durable execution history; implemented bounded web automation with safety enforcement and retry orchestration.**
+
+---
+
+# Why this project is interesting
+
+Most browser automation demos stop at "open page and click button." This project focuses on the **runtime concerns of AI agents**:
+
+* planning,
+* bounded execution,
+* observability,
+* recovery,
+* persistence,
+* and safety.
+
+Those are the same concerns encountered in production AI systems.
+
+---
+
+# License
+
+MIT License.
