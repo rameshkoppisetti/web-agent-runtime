@@ -179,8 +179,17 @@ class BrowserManager:
                 if len(matches) != 1:
                     raise RuntimeError(f"Could not uniquely select {city!r}; use a city and country, such as 'Hyderabad, IN'")
                 option = page.locator("p").filter(has_text=re.compile(re.escape(matches[0])))
-                if await option.count() != 1:
-                    raise RuntimeError(f"Cleartrip airport suggestion for {city!r} was not actionable")
+                count = await option.count()
+
+                if count == 0:
+                    raise RuntimeError(
+                        f"Cleartrip airport suggestion for {city!r} was not actionable"
+                    )
+
+                # Use the first visible matching suggestion instead of requiring exactly one.
+                target = option.first
+                await target.scroll_into_view_if_needed()
+                await target.click(force=True)
                 text = matches[0]
                 escaped = text.replace("\\", "\\\\\\").replace("'", "\\\\'")
 
@@ -200,7 +209,8 @@ class BrowserManager:
             if await search.count() != 1:
                 raise RuntimeError("Cleartrip search control could not be identified safely")
             await search.click()
-            await page.wait_for_timeout(3_000)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(3000)
             text = await page.locator("body").inner_text()
             if "Enter departure and arrival airports" in text:
                 raise RuntimeError("Cleartrip did not accept the selected airports")
@@ -213,28 +223,46 @@ class BrowserManager:
 
     @staticmethod
     def _extract_flight_options(page_text: str) -> list[FlightOption]:
+        # Normalize whitespace
+        text = re.sub(r"\s+", " ", page_text)
+
         pattern = re.compile(
-            r"(?:Partial Refundable\s+)?"
-            r"(?P<airline>[A-Za-z][A-Za-z ]+)\s+"
-            r"(?P<flight_number>[A-Z0-9-]+)\s+"
-            r"(?P<departure>\d{2}:\d{2})\s+"
-            r"(?P<duration>\d+h\s+\d+m)\s+"
-            r"(?P<stops>Non Stop|\d+ stop)\s+"
-            r"(?P<arrival>\d{2}:\d{2})\s+"
+            r"(?:Partial Refundable )?"
+            r"(?P<airline>[A-Za-z][A-Za-z &]+?) "
+            r"(?P<flight_number>[A-Z0-9-]+) "
+            r"(?P<departure>\d{2}:\d{2}) "
+            r"(?P<duration>\d+h ?\d+m) "
+            r"(?P<stops>Non[- ]?[Ss]top|\d+ ?[Ss]top[s]?) "
+            r"(?P<arrival>\d{2}:\d{2})"
+            r".*?"
             r"(?P<price>₹[\d,]+)",
+            re.IGNORECASE,
         )
-        return [FlightOption(**match.groupdict()) for match in pattern.finditer(page_text)][:8]
 
-    @staticmethod
-    def _rank_flight_options(options: list[FlightOption], request: FlightRequest) -> list[FlightOption]:
-        if request.non_stop_only:
-            options = [option for option in options if option.stops == "Non Stop"]
-        if request.sort_by == "duration":
-            return sorted(options, key=lambda option: int(option.duration.split("h")[0]) * 60 + int(option.duration.split("h")[1].strip().rstrip("m")))
-        if request.sort_by == "departure":
-            return sorted(options, key=lambda option: option.departure)
-        return sorted(options, key=lambda option: int(option.price.replace("₹", "").replace(",", "")))
+        options: list[FlightOption] = []
 
+        for match in pattern.finditer(text):
+            data = match.groupdict()
+
+            stops = data["stops"]
+            if re.search(r"non[- ]?stop", stops, re.IGNORECASE):
+                stops = "Non Stop"
+            else:
+                stops = stops.replace("Stops", "stop").replace("stops", "stop")
+
+            options.append(
+                FlightOption(
+                    airline=data["airline"].strip(),
+                    flight_number=data["flight_number"].strip(),
+                    departure=data["departure"],
+                    arrival=data["arrival"],
+                    duration=data["duration"].strip(),
+                    stops=stops,
+                    price=data["price"],
+                )
+            )
+
+        return options[:20]
 
 class RuntimeState(TypedDict):
     task: AgentTask
