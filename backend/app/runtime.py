@@ -136,90 +136,191 @@ class BrowserManager:
         finally:
             await page.close()
 
-    async def search_flights(self, url: str, request: FlightRequest, artifact_path: Path | None = None) -> tuple[str, str, list[FlightOption]]:
+    async def search_flights(
+        self,
+        url: str,
+        request: FlightRequest,
+        artifact_path: Path | None = None,
+    ) -> tuple[str, str, list[FlightOption]]:
         """Run the bounded Cleartrip search flow; it never opens a booking flow."""
-        if not self._browser or not request.origin or not request.destination or not request.departure_date:
+
+        if (
+            not self._browser
+            or not request.origin
+            or not request.destination
+            or not request.departure_date
+        ):
             raise RuntimeError("Flight search requires complete trip constraints")
+
         try:
             departure = date.fromisoformat(request.departure_date)
         except ValueError as exc:
-            raise RuntimeError("Use an ISO departure date (YYYY-MM-DD) for flight search") from exc
+            raise RuntimeError(
+                "Use an ISO departure date (YYYY-MM-DD) for flight search"
+            ) from exc
+
         today = date.today()
         month_offset = (departure.year - today.year) * 12 + departure.month - today.month
+
         if month_offset not in (0, 1):
-            raise RuntimeError("Cleartrip safe executor currently supports dates in the next two visible calendar months")
+            raise RuntimeError(
+                "Cleartrip safe executor currently supports dates in the next two visible calendar months"
+            )
 
         page = await self._browser.new_page()
+
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
 
-            # NEW: dismiss login popups / overlays before interacting with the form
+            # dismiss overlays
             await self.tools.execute("dismiss_overlays", page)
 
             close = page.get_by_test_id("closeIcon")
             if await close.count() == 1:
                 await close.click(force=True)
 
-            for placeholder, city in (("Where from?", request.origin), ("Where to?", request.destination)):
+            for placeholder, city in (
+                ("Where from?", request.origin),
+                ("Where to?", request.destination),
+            ):
                 field = page.get_by_placeholder(placeholder)
                 city_name, _, country = city.partition(",")
+
+                await field.click()
                 await field.fill(city_name.strip())
+
                 matches: list[str] = []
+
                 for _ in range(10):
                     option_texts = await page.locator("p").all_text_contents()
+
                     matches = [
                         text.strip()
                         for text in option_texts
                         if city_name.strip().lower() in text.lower()
-                        and (not country or f", {country.strip().upper()}" in text.upper())
+                        and (
+                            not country
+                            or f", {country.strip().upper()}" in text.upper()
+                        )
                     ]
+
                     if matches:
                         break
-                    await page.wait_for_timeout(300)
-                if len(matches) != 1:
-                    raise RuntimeError(f"Could not uniquely select {city!r}; use a city and country, such as 'Hyderabad, IN'")
-                option = page.locator("p").filter(has_text=re.compile(re.escape(matches[0])))
-                count = await option.count()
 
-                if count == 0:
+                    await page.wait_for_timeout(300)
+
+                if not matches:
+                    raise RuntimeError(
+                        f"Could not find an airport suggestion for {city!r}"
+                    )
+
+                option = page.locator("p").filter(
+                    has_text=re.compile(re.escape(matches[0]))
+                )
+
+                if await option.count() == 0:
                     raise RuntimeError(
                         f"Cleartrip airport suggestion for {city!r} was not actionable"
                     )
 
-                # Use the first visible matching suggestion instead of requiring exactly one.
                 target = option.first
                 await target.scroll_into_view_if_needed()
                 await target.click(force=True)
-                text = matches[0]
-                escaped = text.replace("\\", "\\\\\\").replace("'", "\\\\'")
-
-                await self.tools.execute(
-                    "click",
-                    page,
-                    selector=f"p:has-text('{escaped}')",
-                    )
 
             await page.get_by_test_id("dateSelectOnward").click()
-            days = page.locator(".day-gridContent").filter(has_text=re.compile(rf"^{departure.day}$"))
+
+            days = page.locator(".day-gridContent").filter(
+                has_text=re.compile(rf"^{departure.day}$")
+            )
+
             if await days.count() <= month_offset:
-                raise RuntimeError("Departure date is not available in Cleartrip's visible calendar")
+                raise RuntimeError(
+                    "Departure date is not available in Cleartrip's visible calendar"
+                )
+
             await days.nth(month_offset).click()
 
             search = page.get_by_role("button", name="Search Flights")
+
             if await search.count() != 1:
-                raise RuntimeError("Cleartrip search control could not be identified safely")
+                raise RuntimeError(
+                    "Cleartrip search control could not be identified safely"
+                )
+
             await search.click()
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(3000)
+
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(2500)
+
             text = await page.locator("body").inner_text()
+
             if "Enter departure and arrival airports" in text:
                 raise RuntimeError("Cleartrip did not accept the selected airports")
+
             if artifact_path:
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 await page.screenshot(path=str(artifact_path), full_page=True)
-            return await page.title(), page.url, self._rank_flight_options(self._extract_flight_options(text), request)
+
+            return (
+                await page.title(),
+                page.url,
+                self._rank_flight_options(
+                    self._extract_flight_options(text),
+                    request,
+                ),
+            )
+
         finally:
             await page.close()
+            
+        
+    @staticmethod
+    def _rank_flight_options(
+        options: list[FlightOption],
+        request: FlightRequest,
+    ) -> list[FlightOption]:
+        def price_value(option: FlightOption) -> int:
+            return int(re.sub(r"\D", "", option.price) or 0)
+
+        def duration_minutes(option: FlightOption) -> int:
+            hours, minutes = re.findall(r"\d+", option.duration)
+            return int(hours) * 60 + int(minutes)
+
+        def departure_key(option: FlightOption) -> str:
+            return option.departure
+
+        ranked = options
+
+        if request.non_stop_only:
+            ranked = [
+                option
+                for option in ranked
+                if option.stops.lower() == "non stop"
+            ]
+
+        if request.sort_by == "duration":
+            ranked = sorted(
+                ranked,
+                key=lambda option: (
+                    duration_minutes(option),
+                    price_value(option),
+                ),
+            )
+        elif request.sort_by == "departure":
+            ranked = sorted(
+                ranked,
+                key=lambda option: departure_key(option),
+            )
+        else:
+            ranked = sorted(
+                ranked,
+                key=lambda option: (
+                    price_value(option),
+                    duration_minutes(option),
+                ),
+            )
+
+        return ranked[:10]
 
     @staticmethod
     def _extract_flight_options(page_text: str) -> list[FlightOption]:
@@ -245,10 +346,14 @@ class BrowserManager:
             data = match.groupdict()
 
             stops = data["stops"]
+
             if re.search(r"non[- ]?stop", stops, re.IGNORECASE):
                 stops = "Non Stop"
             else:
-                stops = stops.replace("Stops", "stop").replace("stops", "stop")
+                stops = (
+                    stops.replace("Stops", "stop")
+                    .replace("stops", "stop")
+                )
 
             options.append(
                 FlightOption(
@@ -263,6 +368,9 @@ class BrowserManager:
             )
 
         return options[:20]
+
+
+    
 
 class RuntimeState(TypedDict):
     task: AgentTask
